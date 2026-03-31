@@ -1,0 +1,1 @@
+A real HR agent that can reads policy, reasons about the user’s intent, chooses ERP actions, calls ERP endpoints, verifies results, and completes multi-step HR workflows end to end.
