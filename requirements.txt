@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+sqlalchemy
+pgvector
+psycopg2-binary
+pydantic
+pydantic-settings
+httpx
+redis
+celery
+python-dotenv
+alembic
+langchain
+langchain-openai
+openai
