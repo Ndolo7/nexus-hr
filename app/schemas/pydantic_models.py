@@ -32,3 +32,24 @@ class AuditLogSchema(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ERPNextPullSyncRequest(BaseModel):
+    doctypes: Optional[List[str]] = Field(
+        default=None,
+        description="Optional list of ERPNext DocTypes to sync. Defaults to Employee, Attendance, Leave Application, Salary Slip.",
+    )
+    modified_after: Optional[str] = Field(
+        default=None,
+        description="Optional ISO timestamp override (e.g., 2026-04-20 10:00:00.000000). If omitted, checkpoints are used.",
+    )
+    limit_per_doctype: int = Field(default=200, ge=1, le=1000)
+
+
+class ERPNextWebhookIngestResponse(BaseModel):
+    event_id: int
+    doctype: Optional[str] = None
+    docname: Optional[str] = None
+    event_type: Optional[str] = None
+    signature_valid: bool
+    sync_result: Optional[Dict[str, Any]] = None
