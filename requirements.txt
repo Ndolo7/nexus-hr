@@ -11,5 +11,8 @@ celery
 python-dotenv
 alembic
 langchain
-langchain-openai
-openai
+langchain-google-genai
+google-generativeai
+python-multipart
+pypdf
+python-docx
