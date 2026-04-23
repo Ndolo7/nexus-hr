@@ -3,6 +3,7 @@ from app.services.erp_client import erp_client
 from app.core.guardrails import GuardrailsService
 from typing import Dict, Any
 
+
 @registry.register(
     name="get_employee_profile",
     description="Fetch the profile details of an employee.",
@@ -15,8 +16,9 @@ from typing import Dict, Any
     }
 )
 async def tool_get_employee_profile(employee_id: str, user_id: str) -> Dict[str, Any]:
-    GuardrailsService.check_permission(user_id, "get_employee_profile")
+    await GuardrailsService.check_permission(user_id, "get_employee_profile", employee_id=employee_id)
     return await erp_client.get_employee_profile(employee_id)
+
 
 @registry.register(
     name="get_leave_balance",
@@ -30,8 +32,9 @@ async def tool_get_employee_profile(employee_id: str, user_id: str) -> Dict[str,
     }
 )
 async def tool_get_leave_balance(employee_id: str, user_id: str) -> Dict[str, Any]:
-    GuardrailsService.check_permission(user_id, "get_leave_balance")
+    await GuardrailsService.check_permission(user_id, "get_leave_balance", employee_id=employee_id)
     return await erp_client.get_leave_balance(employee_id)
+
 
 @registry.register(
     name="create_leave_request",
@@ -49,7 +52,7 @@ async def tool_get_leave_balance(employee_id: str, user_id: str) -> Dict[str, An
     }
 )
 async def tool_create_leave_request(employee_id: str, leave_type: str, start_date: str, end_date: str, user_id: str, reason: str = "") -> Dict[str, Any]:
-    GuardrailsService.check_permission(user_id, "create_leave_request")
+    await GuardrailsService.check_permission(user_id, "create_leave_request", employee_id=employee_id)
     leave_data = {
         "leave_type": leave_type,
         "start_date": start_date,
@@ -57,6 +60,7 @@ async def tool_create_leave_request(employee_id: str, leave_type: str, start_dat
         "reason": reason
     }
     return await erp_client.create_leave_request(employee_id, leave_data)
+
 
 @registry.register(
     name="get_payslip_summary",
@@ -71,5 +75,5 @@ async def tool_create_leave_request(employee_id: str, leave_type: str, start_dat
     }
 )
 async def tool_get_payslip_summary(employee_id: str, period: str, user_id: str) -> Dict[str, Any]:
-    GuardrailsService.check_permission(user_id, "get_payslip_summary")
+    await GuardrailsService.check_permission(user_id, "get_payslip_summary", employee_id=employee_id)
     return await erp_client.get_payslip_summary(employee_id, period)
