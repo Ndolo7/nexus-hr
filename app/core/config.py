@@ -16,9 +16,14 @@ class Settings(BaseSettings):
     # ERP
     ERP_BASE_URL: str
     ERP_API_KEY: str
+    ERP_API_SECRET: str = ""
+    ERP_VERIFY_SSL: bool = True
+    ERP_TIMEOUT_SECONDS: float = 15.0
+    ERP_WEBHOOK_SECRET: str = ""
     
     # LLM
-    OPENAI_API_KEY: str
+    GOOGLE_API_KEY: str
+    GOOGLE_EMBEDDING_MODEL: str = "models/text-embedding-004"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=True)
 
