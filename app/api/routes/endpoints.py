@@ -1,10 +1,11 @@
 import hashlib
 import hmac
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+from app.core.auth import AuthError, decode_and_validate_jwt
 from app.core.config import settings
 from app.core.agent import agent_core
 from app.schemas.pydantic_models import (
@@ -21,10 +22,23 @@ from app.services.rag_engine import rag_engine
 router = APIRouter()
 security = HTTPBearer()
 
+EMPLOYEE_PROFILE_FIELDS: List[str] = [
+    "name",
+    "employee",
+    "employee_name",
+    "company",
+    "designation",
+    "department",
+    "status",
+    "date_of_joining",
+    "user_id",
+    "cell_number",
+    "personal_email",
+]
 
-async def get_current_user(
+
+async def get_service_principal(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    x_employee_id: str | None = Header(default=None, alias="X-Employee-Id"),
 ):
     if credentials.scheme != "Bearer":
         raise HTTPException(
@@ -35,35 +49,99 @@ async def get_current_user(
 
     token = credentials.credentials.strip()
     service_secret = settings.API_SECRET_KEY.strip()
+    if not service_secret:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service token auth is not configured.",
+        )
 
-    # Supports either:
-    # 1) Authorization: Bearer <API_SECRET_KEY> + X-Employee-Id header
-    # 2) Authorization: Bearer <API_SECRET_KEY>:<employee_id>
-    if token == service_secret:
-        employee_id = (x_employee_id or "").strip()
-    elif token.startswith(f"{service_secret}:"):
-        employee_id = token.split(":", 1)[1].strip()
-    else:
+    if hmac.compare_digest(token, service_secret):
+        return {"token_type": "service"}
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid authentication credentials.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    if credentials.scheme != "Bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials.",
+            detail="Invalid authentication scheme.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not employee_id:
+    token = credentials.credentials.strip()
+    try:
+        claims = decode_and_validate_jwt(token)
+    except AuthError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing employee context. Provide X-Employee-Id or append ':<employee_id>' to the bearer token.",
+            detail=f"Invalid JWT: {exc}",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-    try:
-        employee = await erp_client.get_employee_profile(employee_id)
-    except ERPClientError as exc:
-        if exc.status_code == 404:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Employee not found in ERPNext.")
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"ERPNext auth lookup failed: {exc}")
+    candidate_claims = []
+    for claim_key in [
+        settings.JWT_EMPLOYEE_ID_CLAIM.strip(),
+        settings.JWT_SUB_CLAIM.strip(),
+        settings.JWT_EMAIL_CLAIM.strip(),
+        "preferred_username",
+        "upn",
+    ]:
+        if claim_key and claim_key not in candidate_claims:
+            candidate_claims.append(claim_key)
 
-    return {"user_id": employee.get("name") or employee_id, "employee": employee}
+    candidate_values = []
+    for key in candidate_claims:
+        value = claims.get(key)
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized and normalized not in candidate_values:
+                candidate_values.append(normalized)
+
+    if not candidate_values:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "JWT does not contain a usable employee identity claim. "
+                f"Expected one of: {', '.join(candidate_claims)}."
+            ),
+        )
+
+    employee = None
+    for identifier in candidate_values:
+        try:
+            employee = await erp_client.get_employee_profile(identifier)
+            if employee:
+                break
+        except ERPClientError as exc:
+            if exc.status_code != 404:
+                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"ERPNext auth lookup failed: {exc}")
+
+        try:
+            rows = await erp_client.list_resource(
+                "Employee",
+                filters={"user_id": identifier},
+                fields=EMPLOYEE_PROFILE_FIELDS,
+                limit_page_length=1,
+            )
+        except ERPClientError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"ERPNext auth lookup failed: {exc}")
+
+        if rows:
+            employee = rows[0]
+            break
+
+    if not employee:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No matching Employee found in ERPNext.")
+
+    resolved_user_id = employee.get("name") or employee.get("employee")
+    return {"user_id": resolved_user_id, "employee": employee, "claims": claims}
 
 
 def _verify_erpnext_webhook_signature(raw_body: bytes, signature_header: str | None) -> bool:
@@ -95,6 +173,9 @@ async def chat(request: ChatRequest, current_user: Dict[str, Any] = Depends(get_
         employee_code = current_user.get("employee", {}).get("employee")
         if employee_code:
             allowed_ids.add(str(employee_code))
+        employee_user = current_user.get("employee", {}).get("user_id")
+        if employee_user:
+            allowed_ids.add(str(employee_user))
         if str(request.user_id) not in allowed_ids:
             raise HTTPException(status_code=403, detail="request.user_id must match authenticated employee.")
         result = await agent_core.chat(user_id=current_user["user_id"], query=request.query)
@@ -115,6 +196,9 @@ async def execute_action(request: ActionRequest, current_user: Dict[str, Any] = 
         employee_code = current_user.get("employee", {}).get("employee")
         if employee_code:
             allowed_ids.add(str(employee_code))
+        employee_user = current_user.get("employee", {}).get("user_id")
+        if employee_user:
+            allowed_ids.add(str(employee_user))
         if str(request.user_id) not in allowed_ids:
             raise HTTPException(status_code=403, detail="request.user_id must match authenticated employee.")
         result = await agent_core.direct_action(
@@ -193,6 +277,20 @@ async def pull_erpnext_data(
         return {"status": "success", **result}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/erpnext/connection-test")
+async def test_erpnext_connection(_service: Dict[str, Any] = Depends(get_service_principal)):
+    """
+    Verify Nexus HR can reach and authenticate against the configured ERPNext/Frappe instance.
+    """
+    try:
+        result = await erp_client.ping()
+        return {"status": "success", **result}
+    except ERPClientError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"ERPNext connectivity failed: {exc}")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
