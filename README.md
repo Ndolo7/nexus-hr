@@ -73,12 +73,26 @@ Edit `.env`:
 ```env
 DATABASE_URL="postgresql://user:password@localhost:5432/nexus_hr"
 REDIS_URL="redis://localhost:6379/0"
-API_SECRET_KEY="your-secret-key"
+
+# Nexus auth (user JWTs)
+JWT_SECRET_KEY="your-jwt-signing-secret"
+JWT_ALGORITHM="HS256"
+JWT_PUBLIC_KEY_PATH=""  # set when using RS256/RS384/RS512
+JWT_AUDIENCE=""
+JWT_ISSUER=""
+JWT_LEEWAY_SECONDS=30
+JWT_EMPLOYEE_ID_CLAIM="employee_id"
+JWT_EMAIL_CLAIM="email"
+JWT_SUB_CLAIM="sub"
+API_SECRET_KEY="internal-service-secret"  # optional, for service-only routes
 
 # ERPNext / Frappe
 ERP_BASE_URL="https://erp.example.com"
 ERP_API_KEY="your-frappe-api-key"
 ERP_API_SECRET="your-frappe-api-secret"
+ERP_AUTH_MODE="auto"         # auto | token | bearer | raw | none
+ERP_AUTH_HEADER=""           # optional full Authorization value
+ERP_SITE_NAME=""             # optional; useful for Frappe Docker multi-site routing
 ERP_VERIFY_SSL=true
 ERP_TIMEOUT_SECONDS=15
 ERP_WEBHOOK_SECRET="optional-webhook-hmac-secret"
@@ -111,24 +125,35 @@ The `/upload` endpoint indexes policy documents into the RAG knowledge base so t
 
 ### Authentication
 
-All endpoints require a Bearer token. Use your `API_SECRET_KEY` from `.env`:
+User-facing endpoints (`/chat`, `/action`, `/upload`, `/erpnext/sync/*`) require a JWT:
+
+```
+Authorization: Bearer <user-jwt>
+```
+
+Identity mapping from JWT to ERP Employee is resolved using claims in this order:
+
+1. `JWT_EMPLOYEE_ID_CLAIM` (default: `employee_id`)
+2. `JWT_SUB_CLAIM` (default: `sub`)
+3. `JWT_EMAIL_CLAIM` (default: `email`)
+4. fallback claims: `preferred_username`, `upn`
+
+Nexus then finds the matching ERP Employee by Employee ID/name or `Employee.user_id`.
+
+Supported JWT algorithms: `HS256`, `HS384`, `HS512`, `RS256`, `RS384`, `RS512`.
+For RSA algorithms, set `JWT_PUBLIC_KEY_PATH` to a PEM public key file.
+
+`/erpnext/connection-test` is service-only and can use:
 
 ```
 Authorization: Bearer <API_SECRET_KEY>
-X-Employee-Id: <ERPNext Employee ID>
-```
-
-You can alternatively include employee context in the bearer token itself:
-
-```
-Authorization: Bearer <API_SECRET_KEY>:<ERPNext Employee ID>
 ```
 
 ### Upload via cURL
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/upload \
-  -H "Authorization: Bearer <your-api-secret-key>" \
+  -H "Authorization: Bearer <user-jwt>" \
   -F "file=@/path/to/employee-handbook.pdf" \
   -F "title=Employee Handbook 2025" \
   -F "category=handbook"
@@ -137,7 +162,7 @@ curl -X POST http://localhost:8000/api/v1/upload \
 ### Upload via the Swagger UI
 
 1. Open `http://localhost:8000/docs`
-2. Click **Authorize** (top right) → enter your `API_SECRET_KEY`
+2. Click **Authorize** (top right) → enter your user JWT
 3. Expand **POST /api/v1/upload**
 4. Click **Try it out** and fill in:
    - `file` — upload `.pdf`, `.docx`, or `.txt`
@@ -165,6 +190,7 @@ curl -X POST http://localhost:8000/api/v1/upload \
 | `POST` | `/api/v1/chat` | Conversational HR agent |
 | `POST` | `/api/v1/action` | Direct ERP action (bypass chat) |
 | `POST` | `/api/v1/upload` | Upload HR handbook / policy document |
+| `GET` | `/api/v1/erpnext/connection-test` | Validate ERPNext/Frappe connectivity + auth |
 | `POST` | `/api/v1/erpnext/sync/pull` | Pull-sync ERPNext DocTypes (`Employee`, `Attendance`, `Leave Application`, `Salary Slip`) |
 | `GET` | `/api/v1/erpnext/sync/checkpoints` | View last sync checkpoint per DocType |
 | `POST` | `/api/v1/erpnext/webhook` | Receive ERPNext/Frappe webhook events |
@@ -173,22 +199,38 @@ curl -X POST http://localhost:8000/api/v1/upload \
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/chat \
-  -H "Authorization: Bearer <your-api-secret-key>" \
+  -H "Authorization: Bearer <user-jwt>" \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "emp_456", "query": "How many annual leave days am I entitled to?"}'
+  -d '{"user_id": "EMP-0001", "query": "How many annual leave days am I entitled to?"}'
 ```
 
 ### Example ERPNext Pull Sync
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/erpnext/sync/pull \
-  -H "Authorization: Bearer <your-api-secret-key>" \
+  -H "Authorization: Bearer <user-jwt>" \
   -H "Content-Type: application/json" \
   -d '{
     "doctypes": ["Employee"],
     "limit_per_doctype": 100
   }'
 ```
+
+### Example ERPNext Connection Test
+
+```bash
+curl -X GET http://localhost:8000/api/v1/erpnext/connection-test \
+  -H "Authorization: Bearer <internal-service-secret>"
+```
+
+### Frappe Docker on EC2 Notes
+
+If your ERPNext is running via `frappe_docker` on EC2:
+
+1. Set `ERP_BASE_URL` to your reachable URL (for example `https://<ec2-domain>` or `http://<ec2-ip>:8080`).
+2. If you use multi-site routing by host header, set `ERP_SITE_NAME` (for example `site1.localhost`).
+3. Prefer API key/secret auth (`ERP_AUTH_MODE=token`, `ERP_API_KEY`, `ERP_API_SECRET`).
+4. If you terminate TLS with a self-signed cert, set `ERP_VERIFY_SSL=false` (only for trusted internal networks).
 
 ### Example ERPNext Webhook
 
