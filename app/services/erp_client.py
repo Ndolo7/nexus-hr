@@ -28,6 +28,7 @@ class ERPClient:
 
     def __init__(self):
         self.base_url = settings.ERP_BASE_URL.rstrip("/")
+        self.auth_mode = settings.ERP_AUTH_MODE.strip().lower()
         self.client = httpx.AsyncClient(
             base_url=self.base_url,
             headers=self._build_headers(),
@@ -35,20 +36,49 @@ class ERPClient:
             verify=settings.ERP_VERIFY_SSL,
         )
 
-    def _build_headers(self) -> Dict[str, str]:
+    def _build_authorization_header(self) -> Optional[str]:
+        raw_header = settings.ERP_AUTH_HEADER.strip()
+        if raw_header:
+            return raw_header
+
         api_key = settings.ERP_API_KEY.strip()
         api_secret = settings.ERP_API_SECRET.strip()
-        if api_key and api_secret:
-            auth_value = f"token {api_key}:{api_secret}"
-        else:
-            # Legacy fallback for non-Frappe integrations.
-            auth_value = f"Bearer {api_key}"
+        mode = self.auth_mode or "auto"
 
-        return {
-            "Authorization": auth_value,
+        if mode == "none":
+            return None
+        if mode == "token":
+            return f"token {api_key}:{api_secret}" if api_key and api_secret else None
+        if mode == "bearer":
+            return f"Bearer {api_key}" if api_key else None
+        if mode == "raw":
+            logger.warning("ERP_AUTH_MODE is 'raw' but ERP_AUTH_HEADER is empty; no Authorization header will be sent.")
+            return None
+        if mode != "auto":
+            logger.warning("Unsupported ERP_AUTH_MODE '%s'. Falling back to auto.", mode)
+
+        if api_key and api_secret:
+            return f"token {api_key}:{api_secret}"
+        if api_key:
+            # Legacy fallback for non-Frappe integrations.
+            return f"Bearer {api_key}"
+        return None
+
+    def _build_headers(self) -> Dict[str, str]:
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+        auth_header = self._build_authorization_header()
+        if auth_header:
+            headers["Authorization"] = auth_header
+
+        site_name = settings.ERP_SITE_NAME.strip()
+        if site_name:
+            # Required for some Frappe Docker + reverse proxy setups.
+            headers["X-Frappe-Site-Name"] = site_name
+
+        return headers
 
     def _resource_path(self, doctype: str, name: Optional[str] = None) -> str:
         encoded_doctype = quote(doctype, safe="")
@@ -157,6 +187,16 @@ class ERPClient:
         if http_method.upper() == "GET":
             return await self._request("GET", endpoint, params=params)
         return await self._request("POST", endpoint, data=params or {})
+
+    async def ping(self) -> Dict[str, Any]:
+        payload = await self.call_method("frappe.auth.get_logged_user", http_method="GET")
+        logged_user = payload.get("message") or payload.get("data")
+        return {
+            "base_url": self.base_url,
+            "site_name": settings.ERP_SITE_NAME.strip() or None,
+            "auth_mode": self.auth_mode or "auto",
+            "logged_user": logged_user,
+        }
 
     async def get_employee_profile(self, employee_id: str) -> Dict[str, Any]:
         """
