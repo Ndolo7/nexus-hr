@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: str
     GOOGLE_EMBEDDING_MODEL: str = "models/text-embedding-004"
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=True)
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=True, extra="ignore")
 
 @lru_cache
 def get_settings() -> Settings:
